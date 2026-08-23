@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Voice Cart — Voice Command Shopping Assistant</title>
+<meta name="description" content="A voice-first shopping list: speak or type to add, remove, search and get smart suggestions.">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app-shell">
+
+    <header class="app-header">
+      <h1 class="app-title">Voice<span class="accent">Cart</span></h1>
+      <select id="lang-select" aria-label="Voice recognition language"></select>
+    </header>
+
+    <p id="support-warning" class="support-warning" hidden>
+      Your browser doesn't support voice recognition. You can still manage your list with the text box below.
+    </p>
+
+    <section class="hero">
+      <div class="mic-wrap">
+        <span class="mic-ring ring-1"></span>
+        <span class="mic-ring ring-2"></span>
+        <span class="mic-ring ring-3"></span>
+        <button id="mic-button" type="button" aria-label="Start voice command">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/>
+            <path d="M19 11a7 7 0 0 1-14 0"/>
+            <line x1="12" y1="18" x2="12" y2="22"/>
+            <line x1="8" y1="22" x2="16" y2="22"/>
+          </svg>
+        </button>
+      </div>
+      <p id="mic-status">Tap the mic and speak a command</p>
+      <p id="transcript"></p>
+    </section>
+
+    <form id="text-form">
+      <input id="text-command" type="text" placeholder='Or type: "Add 2 kg atta"' autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+
+    <div id="suggestion-row" class="suggestion-row" hidden></div>
+
+    <div id="search-results" class="search-results" hidden></div>
+
+    <section class="list-card">
+      <div class="list-header">
+        <h2 class="list-title">Your list</h2>
+        <span id="item-count"></span>
+      </div>
+
+      <div id="empty-state" class="empty-state">
+        <strong>Nothing on your list yet</strong>
+        Say "Add doodh" or "I need aloo" to get started.
+      </div>
+
+      <div id="list-container"></div>
+
+      <div class="list-footer">
+        <button id="clear-checked" type="button" hidden>Clear checked items</button>
+      </div>
+    </section>
+
+    <footer class="hint">Try: "Remove doodh" · "Find toothpaste under ₹100" · "Clear my list"</footer>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/nlp.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
