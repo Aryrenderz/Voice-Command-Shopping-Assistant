@@ -3,21 +3,19 @@
 A step-by-step record of how this was built, roughly in the order it
 happened, for anyone reviewing the process rather than just the output.
 
-## 1. Read the brief and scope it
+## 1. Initial ideation and feature listing
 
-Read the assessment PDF and identified the four hard requirements (voice
-input, smart suggestions, list management, voice search) plus the two soft
-constraints that shape everything else: an 8-hour time budget and a
-"minimalist, mobile-friendly" UI. Decided upfront to skip a backend/database
-— the brief's own examples (AWS/Firebase) are infrastructure for a
-persistence layer this scope doesn't need, since `localStorage` covers the
+Identified four hard requirements (voice
+input, smart suggestions, list management, voice search) and a
+"minimalist, mobile-friendly" UI. Decided upfront to skip a backend/database.
+`localStorage` covers the
 one thing that needs to persist (purchase history for suggestions).
 
 ## 2. Inspect and curate the dataset
 
 Unzipped `BigBasket_Products_csv.zip` (~38,000 rows, 11 categories). Filtered
 to 6 grocery-relevant categories, then noticed a first-pass extraction
-(top-rated items per sub-category) surfaced flavoured milkshakes above
+(top-rated items per sub-category). Example: surfaced flavoured milkshakes above
 plain milk — the dataset's rating field rewards niche products with
 passionate small review pools. Added a second, explicit "staples" pass with
 per-keyword exclusion lists (documented in full in `DATA_PIPELINE.md`) and
@@ -26,8 +24,7 @@ outranked "Milkshake." Final catalog: 284 products.
 
 ## 3. Design the visual language before writing markup
 
-Rejected the two AI-generic defaults (cream background + terracotta serif;
-near-black + acid accent) in favor of a concept grounded in the subject
+Designed with a language that grounded in the subject
 matter: a neighbourhood grocery counter digitized — an ink-charcoal header
 like a shop signboard, a warm receipt-paper canvas, marigold and teal
 accents pulled from spice tins and produce crates, and the cart styled as
@@ -38,7 +35,7 @@ system.
 ## 4. Build the NLP layer first, independently of any UI
 
 Wrote `nlp.js` as pure functions (text in, structured command out) before
-touching the DOM, specifically so it could be tested without a browser.
+reaching the DOM, specifically so it could be tested without a browser.
 Built a Node `vm`-based test harness and ran ~15 realistic commands through
 it — English and Hindi, add/remove/search/checkout, with quantities and
 price filters — before wiring anything to a screen. This caught the
@@ -161,18 +158,12 @@ grant) calls `getUserMedia()` exactly once across five mic clicks; a
 context pre-authorized at the browser level (simulating a returning
 visitor) calls it zero times, going straight to `recognition.start()`.
 
-## 13. Documentation pass
 
-Wrote this log, the architecture doc, the data-pipeline doc, the 200-word
-approach summary, and the README last — after the app was working and
-tested, so the documentation describes what was actually built rather than
-what was planned.
-
-## What I'd do next with more time
+## Further Development Scope
 
 - Swap the deterministic stock simulation for a real inventory field if
   this connected to a live BigBasket-style API
-- Add a fuzzy-matching library (e.g. Levenshtein distance) for
+- Add a fuzzy-matching library for
   misheard/mistyped item names, rather than relying solely on the synonym
   table
 - Expand the Hindi command vocabulary with more regional phrasing variants
