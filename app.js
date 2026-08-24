@@ -1,600 +1,832 @@
-/**
- * app.js
- * -----------------------------------------------------------------------
- * Application state, Web Speech API wiring, rendering and event handling.
- * Depends on data.js (CATEGORY_KEYWORDS, FALLBACK_CATALOG, SUBSTITUTES,
- * PAIRINGS, SEASONAL_ITEMS, SUPPORTED_LANGUAGES, categorize) and nlp.js
- * (parseCommand). Loaded after both in index.html.
- * -----------------------------------------------------------------------
- */
+// ==========================================================================
+// app.js — application state, rendering and event wiring
+// ==========================================================================
 
 (function () {
   'use strict';
 
-  const STORAGE_KEY = 'vcsa.shoppingList.v1';
-  const HISTORY_KEY = 'vcsa.itemHistory.v1';
-  const CATALOG_URL = 'js/data/bigbasket-catalog.json';
-  const SEARCH_RESULT_CAP = 8;
-
-  /** @type {{id:string, name:string, quantity:number, unit:string|null, category:string, checked:boolean}[]} */
-  let shoppingList = loadList();
-  /** Frequency map of previously-added item names, used for "running low on" suggestions. */
-  let itemHistory = loadHistory();
-  let currentLang = 'en-IN';
-  let recognition = null;
-  let isListening = false;
-
-  // The real ~2,250-item BigBasket-derived catalog, fetched at startup.
-  // Starts out as the small built-in fallback so search still works
-  // (with fewer results) the instant the page loads, before the fetch
-  // resolves, or if it fails entirely.
-  let productCatalog = FALLBACK_CATALOG;
-
-  // Mic permission is checked/requested once and cached here so the
-  // browser's permission prompt is never triggered on every tap — see
-  // initMicPermission() / ensureMicAccess() below.
-  let micPermissionState = 'unknown'; // 'unknown' | 'prompt' | 'granted' | 'denied'
-
-  // ---- DOM references -------------------------------------------------
-  const el = {
-    micButton: document.getElementById('mic-button'),
-    micStatus: document.getElementById('mic-status'),
-    transcript: document.getElementById('transcript'),
-    langSelect: document.getElementById('lang-select'),
-    textInput: document.getElementById('text-command'),
-    textForm: document.getElementById('text-form'),
-    listContainer: document.getElementById('list-container'),
-    emptyState: document.getElementById('empty-state'),
-    suggestionRow: document.getElementById('suggestion-row'),
-    searchResults: document.getElementById('search-results'),
-    itemCount: document.getElementById('item-count'),
-    clearCheckedBtn: document.getElementById('clear-checked'),
-    toast: document.getElementById('toast'),
-    supportWarning: document.getElementById('support-warning'),
+  // ---------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------
+  const state = {
+    lang: 'en-IN',
+    cart: {},               // { productId: quantity }
+    activeCategory: 'all',
+    searchQuery: '',
+    priceMax: null,
+    sortBy: 'relevance',
+    lastMatchIds: [],        // ids from the most recent voice/text command, for "did you mean"
+    history: loadHistory(),  // { productId: timesAdded } persisted across sessions
   };
 
-  // ---- Catalog loading --------------------------------------------------
-  async function loadCatalog() {
-    try {
-      const res = await fetch(CATALOG_URL);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (Array.isArray(data) && data.length) {
-        productCatalog = data;
-      }
-    } catch (err) {
-      // Common, expected cause: the page was opened directly via file://
-      // (fetch of a local JSON file is blocked by the browser) instead of
-      // through a local server — see README "Running it locally". The app
-      // keeps working with the small built-in fallback catalog either way.
-      console.warn(`Could not load ${CATALOG_URL}; using the built-in fallback catalog.`, err);
-    }
+  const CATEGORY_ICONS = {
+    'Beverages': '🥤',
+    'Bakery, Cakes & Dairy': '🥛',
+    'Foodgrains, Oil & Masala': '🌾',
+    'Snacks & Branded Foods': '🍪',
+    'Fruits & Vegetables': '🍅',
+    'Eggs, Meat & Fish': '🥚',
+    'Gourmet & World Food': '🍯',
+  };
+
+  // deterministic pseudo-stock flags so the demo is stable across reloads
+  function stockStatus(id) {
+    if (id % 17 === 0) return 'out';
+    if (id % 7 === 0) return 'low';
+    return 'in';
   }
 
-  // ---- Persistence ------------------------------------------------------
-  function loadList() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
-    } catch {
-      return [];
+  // Every unit in this catalog is sold as a single retail pack, so quantity
+  // is always expressed as "N pack(s)" rather than a bare number — this is
+  // shown wherever a quantity appears (product cards, cart lines, the
+  // add-confirmation dialog).
+  function packLabel(qty) {
+    if (state.lang === 'hi-IN') return `${qty} ${t('pack', state.lang)}`;
+    return `${qty} ${qty === 1 ? t('pack', state.lang) : t('packs', state.lang)}`;
+  }
+
+  // simple seasonal calendar (by month, 0-indexed) -> keywords found in produce names
+  const SEASONAL_CALENDAR = {
+    winter: { months: [10, 11, 0, 1], keywords: ['orange', 'guava', 'carrot', 'spinach', 'peas', 'strawberr'] },
+    summer: { months: [2, 3, 4, 5], keywords: ['mango', 'watermelon', 'muskmelon', 'cucumber', 'lychee'] },
+    monsoon: { months: [6, 7, 8, 9], keywords: ['corn', 'jamun', 'pear', 'plum', 'apple'] },
+  };
+  function currentSeasonKeywords() {
+    const month = new Date().getMonth();
+    for (const s of Object.values(SEASONAL_CALENDAR)) {
+      if (s.months.includes(month)) return s.keywords;
     }
+    return [];
   }
-  function saveList() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(shoppingList));
+  function isSeasonal(product) {
+    if (product.category !== 'Fruits & Vegetables') return false;
+    const kws = currentSeasonKeywords();
+    const name = product.name.toLowerCase();
+    return kws.some(k => name.includes(k));
   }
+
+  // "frequently bought together" — hand-picked pairs relevant to Indian kitchens
+  const PAIR_SUGGESTIONS = {
+    'Dairy': ['Tea', 'Coffee', 'Breakfast Cereals'],
+    'Tea': ['Dairy', 'Biscuits & Cookies'],
+    'Coffee': ['Dairy', 'Biscuits & Cookies'],
+    'Breads & Buns': ['Dairy', 'Spreads, Sauces, Ketchup'],
+    'Rice & Rice Products': ['Dals & Pulses', 'Masalas & Spices'],
+    'Dals & Pulses': ['Rice & Rice Products', 'Masalas & Spices'],
+    'Atta, Flours & Sooji': ['Edible Oils & Ghee', 'Dals & Pulses'],
+    'Fresh Vegetables': ['Masalas & Spices', 'Edible Oils & Ghee'],
+    'Noodle, Pasta, Vermicelli': ['Spreads, Sauces, Ketchup'],
+    'Eggs': ['Bread', 'Breads & Buns'],
+  };
+
   function loadHistory() {
     try {
-      return JSON.parse(localStorage.getItem(HISTORY_KEY)) || {};
-    } catch {
-      return {};
-    }
+      const raw = localStorage.getItem('bolbasket_history');
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
   }
   function saveHistory() {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(itemHistory));
+    try { localStorage.setItem('bolbasket_history', JSON.stringify(state.history)); }
+    catch (e) { /* storage unavailable — fail silently, app still works */ }
   }
 
-  // ---- Mic permission (requested once, not on every tap) --------------------
-  // SpeechRecognition's own internal permission prompt is, in some
-  // browsers, re-triggered on every start() call rather than remembered.
-  // Standard getUserMedia() permissions ARE persisted per-origin by the
-  // browser (as long as the page is served over HTTPS or localhost — see
-  // README "Running it locally"), so this asks via getUserMedia() once,
-  // caches the result, and every later tap skips straight to
-  // recognition.start() without prompting again.
-  async function initMicPermission() {
-    if (!navigator.permissions || !navigator.permissions.query) return;
-    try {
-      const status = await navigator.permissions.query({ name: 'microphone' });
-      micPermissionState = status.state; // 'granted' | 'denied' | 'prompt'
-      status.onchange = () => {
-        micPermissionState = status.state;
-      };
-    } catch {
-      // Some browsers (e.g. Firefox) don't support querying 'microphone'
-      // via the Permissions API — fall back to asking on first mic tap.
-    }
+  const productById = new Map(PRODUCTS.map(p => [p.id, p]));
+
+  // ---------------------------------------------------------------------
+  // DOM refs
+  // ---------------------------------------------------------------------
+  const $ = sel => document.querySelector(sel);
+  const micButton = $('#micButton');
+  const homeButton = $('#homeButton');
+  const brandHomeButton = $('#brandHomeButton');
+  const micStatus = $('#micStatus');
+  const ticker = $('#tickerInner');
+  const cmdForm = $('#commandForm');
+  const cmdInput = $('#commandInput');
+  const categoryChips = $('#categoryChips');
+  const maxPriceInput = $('#maxPrice');
+  const sortSelect = $('#sortSelect');
+  const productGrid = $('#productGrid');
+  const emptyState = $('#emptyState');
+  const resultsHeading = $('#resultsHeading');
+  const resultsCount = $('#resultsCount');
+  const suggestionsSection = $('#suggestionsSection');
+  const suggestionScroll = $('#suggestionScroll');
+  const cartDrawer = $('#cartDrawer');
+  const cartOverlay = $('#cartOverlay');
+  const cartToggle = $('#cartToggle');
+  const cartClose = $('#cartClose');
+  const cartItemsEl = $('#cartItems');
+  const cartEmptyMsg = $('#cartEmptyMsg');
+  const cartCountEl = $('#cartCount');
+  const cartSubtotalEl = $('#cartSubtotal');
+  const cartTaxEl = $('#cartTax');
+  const cartTotalEl = $('#cartTotal');
+  const clearCartBtn = $('#clearCartBtn');
+  const checkoutBtn = $('#checkoutBtn');
+  const checkoutOverlay = $('#checkoutOverlay');
+  const checkoutModal = $('#checkoutModal');
+  const checkoutCard = $('#checkoutCard');
+  const confirmOverlay = $('#confirmOverlay');
+  const confirmAddModal = $('#confirmAddModal');
+  const confirmAddCard = $('#confirmAddCard');
+  const toastHost = $('#toastHost');
+
+  // ---------------------------------------------------------------------
+  // Toast + ticker feedback ("visual feedback" requirement)
+  // ---------------------------------------------------------------------
+  function toast(msg, type) {
+    const el = document.createElement('div');
+    el.className = 'toast' + (type === 'error' ? ' toast-error' : '');
+    el.textContent = msg;
+    toastHost.appendChild(el);
+    setTimeout(() => el.remove(), 2600);
   }
 
-  async function ensureMicAccess() {
-    if (micPermissionState === 'granted') return true;
-    if (micPermissionState === 'denied') {
-      el.micStatus.textContent = 'Microphone access was denied. Allow it in your browser settings to use voice input.';
-      return false;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Only needed this to obtain (and let the browser persist) the
-      // permission grant — SpeechRecognition captures its own audio, so
-      // release this stream immediately rather than holding the mic open.
-      stream.getTracks().forEach((track) => track.stop());
-      micPermissionState = 'granted';
-      return true;
-    } catch {
-      micPermissionState = 'denied';
-      el.micStatus.textContent = 'Microphone access was denied. Allow it in your browser settings to use voice input.';
-      return false;
-    }
+  function logToTicker(msg, cls) {
+    const line = document.createElement('span');
+    line.className = 'ticker-item' + (cls ? ' ' + cls : '');
+    line.textContent = msg;
+    ticker.prepend(line);
+    while (ticker.children.length > 6) ticker.removeChild(ticker.lastChild);
   }
 
-  // ---- Toast / feedback --------------------------------------------------
-  let toastTimer = null;
-  function showToast(message, tone = 'info') {
-    el.toast.textContent = message;
-    el.toast.dataset.tone = tone;
-    el.toast.classList.add('visible');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.toast.classList.remove('visible'), 3200);
-  }
-
-  function speak(text) {
-    if (!('speechSynthesis' in window)) return;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = currentLang;
-    utterance.rate = 1.05;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
-  }
-
-  // ---- List operations --------------------------------------------------
-  // explicitCategory lets a search-result "Add" button pass the category
-  // the catalog already knows (real BigBasket data), instead of making
-  // categorize() re-guess it from the name — more accurate, and cheaper.
-  function addItem(name, quantity = 1, unit = null, explicitCategory = null) {
-    const category = explicitCategory || categorize(name);
-    const existing = shoppingList.find(
-      (i) => i.name.toLowerCase() === name.toLowerCase() && !i.checked
-    );
-    if (existing) {
-      existing.quantity += quantity;
-    } else {
-      shoppingList.push({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        name,
-        quantity,
-        unit,
-        category,
-        checked: false,
+  // ---------------------------------------------------------------------
+  // Category chips
+  // ---------------------------------------------------------------------
+  function renderChips() {
+    const categories = ['all', ...new Set(PRODUCTS.map(p => p.category))];
+    categoryChips.innerHTML = '';
+    categories.forEach(cat => {
+      const btn = document.createElement('button');
+      btn.className = 'chip' + (state.activeCategory === cat ? ' is-active' : '');
+      btn.type = 'button';
+      btn.dataset.tagIcon = cat === 'all' ? '🛒' : (CATEGORY_ICONS[cat] || '•');
+      btn.textContent = cat === 'all' ? t('all', state.lang) : cat;
+      btn.addEventListener('click', () => {
+        state.activeCategory = cat;
+        renderChips();
+        renderCatalog();
       });
+      categoryChips.appendChild(btn);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Catalog filtering + rendering
+  // ---------------------------------------------------------------------
+  function getFilteredProducts() {
+    let list = PRODUCTS.slice();
+    if (state.activeCategory !== 'all') {
+      list = list.filter(p => p.category === state.activeCategory);
     }
-    itemHistory[name.toLowerCase()] = (itemHistory[name.toLowerCase()] || 0) + 1;
-    saveHistory();
-    saveList();
-    render();
-    return category;
-  }
-
-  function removeItemByName(name) {
-    const lower = name.toLowerCase();
-    const before = shoppingList.length;
-    shoppingList = shoppingList.filter((i) => !i.name.toLowerCase().includes(lower));
-    saveList();
-    render();
-    return shoppingList.length < before;
-  }
-
-  function toggleChecked(id) {
-    const item = shoppingList.find((i) => i.id === id);
-    if (item) item.checked = !item.checked;
-    saveList();
-    render();
-  }
-
-  function removeById(id) {
-    shoppingList = shoppingList.filter((i) => i.id !== id);
-    saveList();
-    render();
-  }
-
-  function clearChecked() {
-    shoppingList = shoppingList.filter((i) => !i.checked);
-    saveList();
-    render();
-  }
-
-  function clearAll() {
-    shoppingList = [];
-    saveList();
-    render();
-  }
-
-  // ---- Suggestions --------------------------------------------------------
-  function buildSuggestions() {
-    const chips = [];
-
-    // Pairings based on items currently on the list.
-    shoppingList.forEach((item) => {
-      const key = item.name.toLowerCase();
-      const pairs = PAIRINGS[key];
-      if (pairs) {
-        pairs.forEach((p) => {
-          if (!shoppingList.some((i) => i.name.toLowerCase() === p)) {
-            chips.push({ label: p, reason: `goes with ${item.name}` });
-          }
-        });
+    if (state.searchQuery) {
+      const cmd = parseCommand(state.searchQuery);
+      const matches = findBestMatches(PRODUCTS, cmd, 60);
+      const matchIds = new Set(matches.map(p => p.id));
+      list = list.filter(p => matchIds.has(p.id));
+      // preserve relevance order when a search is active and sort is 'relevance'
+      if (state.sortBy === 'relevance') {
+        const order = matches.map(p => p.id);
+        list.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
       }
-    });
-
-    // "Running low" — items bought frequently in the past but not on the
-    // current list right now.
-    Object.entries(itemHistory)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .forEach(([name, count]) => {
-        if (count >= 2 && !shoppingList.some((i) => i.name.toLowerCase() === name)) {
-          chips.push({ label: name, reason: 'you buy this often' });
-        }
-      });
-
-    // Seasonal picks for the current month.
-    const month = new Date().getMonth();
-    (SEASONAL_ITEMS[month] || []).forEach((name) => {
-      if (!shoppingList.some((i) => i.name.toLowerCase() === name)) {
-        chips.push({ label: name, reason: 'in season' });
-      }
-    });
-
-    // De-duplicate by label, cap at 6 for a clean row.
-    const seen = new Set();
-    return chips.filter((c) => (seen.has(c.label) ? false : (seen.add(c.label), true))).slice(0, 6);
+    }
+    if (state.priceMax != null && !isNaN(state.priceMax)) {
+      list = list.filter(p => p.price <= state.priceMax);
+    }
+    if (state.sortBy === 'price-asc') list.sort((a, b) => a.price - b.price);
+    if (state.sortBy === 'price-desc') list.sort((a, b) => b.price - a.price);
+    if (state.sortBy === 'rating') list.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    return list;
   }
 
-  function renderSuggestions() {
-    const chips = buildSuggestions();
-    el.suggestionRow.innerHTML = '';
-    if (chips.length === 0) {
-      el.suggestionRow.hidden = true;
+  function productCardHTML(p) {
+    const qty = state.cart[p.id] || 0;
+    const stock = stockStatus(p.id);
+    const seasonal = isSeasonal(p);
+    const discount = p.mrp > p.price;
+    let badge = '';
+    if (stock === 'out') badge = `<span class="badge out">${t('outOfStock', state.lang)}</span>`;
+    else if (stock === 'low') badge = `<span class="badge low">${t('lowStock', state.lang)}</span>`;
+    else if (seasonal) badge = `<span class="badge season">${t('seasonal', state.lang)}</span>`;
+
+    const controls = qty > 0
+      ? `<div class="qty-stepper">
+           <button type="button" data-action="dec" data-id="${p.id}" aria-label="Decrease quantity">−</button>
+           <span>${packLabel(qty)}</span>
+           <button type="button" data-action="inc" data-id="${p.id}" aria-label="Increase quantity" ${stock === 'out' ? 'disabled' : ''}>+</button>
+         </div>`
+      : `<button class="add-btn" type="button" data-action="add" data-id="${p.id}" ${stock === 'out' ? 'disabled' : ''}>
+           + ${t('addToList', state.lang)}
+         </button>`;
+
+    return `
+      <article class="product-card">
+        ${badge}
+        <span class="cat-tag">${p.subCategory}</span>
+        <h3 class="p-name">${escapeHTML(p.name)}</h3>
+        <span class="p-brand">${escapeHTML(p.brand || '')}</span>
+        ${p.rating ? `<span class="p-rating">★ ${p.rating.toFixed(1)}</span>` : ''}
+        <div class="price-row">
+          <span class="p-price">₹${p.price}</span>
+          ${discount ? `<span class="p-mrp">₹${p.mrp}</span>` : ''}
+        </div>
+        ${controls}
+      </article>`;
+  }
+
+  function escapeHTML(str) {
+    return String(str).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  function renderCatalog() {
+    const list = getFilteredProducts();
+    productGrid.innerHTML = list.map(productCardHTML).join('');
+    emptyState.hidden = list.length > 0;
+    const itemsWord = state.lang === 'hi-IN' ? 'उत्पाद' : (list.length === 1 ? 'item' : 'items');
+    resultsCount.textContent = list.length ? `${list.length} ${itemsWord}` : '';
+    resultsHeading.textContent = state.searchQuery
+      ? `${t('resultsFor', state.lang)} "${state.searchQuery}"`
+      : t('allProducts', state.lang);
+    bindCardEvents();
+  }
+
+  function bindCardEvents() {
+    productGrid.querySelectorAll('[data-action="add"]').forEach(btn => {
+      btn.addEventListener('click', () => requestAddToCart(Number(btn.dataset.id), 1));
+    });
+    productGrid.querySelectorAll('[data-action="inc"]').forEach(btn => {
+      btn.addEventListener('click', () => addToCart(Number(btn.dataset.id), 1, false));
+    });
+    productGrid.querySelectorAll('[data-action="dec"]').forEach(btn => {
+      btn.addEventListener('click', () => removeFromCart(Number(btn.dataset.id), 1));
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Cart operations
+  // ---------------------------------------------------------------------
+  function addToCart(id, qty, showToast) {
+    const product = productById.get(id);
+    if (!product) return;
+    if (stockStatus(id) === 'out') {
+      toast(`${product.name} — ${t('outOfStock', state.lang)}`, 'error');
+      offerSubstitutes(product);
       return;
     }
-    el.suggestionRow.hidden = false;
-    chips.forEach((chip) => {
-      const btn = document.createElement('button');
-      btn.className = 'chip';
-      btn.type = 'button';
-      btn.innerHTML = `<span class="chip-label">${escapeHtml(chip.label)}</span><span class="chip-reason">${escapeHtml(chip.reason)}</span>`;
-      btn.addEventListener('click', () => {
-        addItem(chip.label, 1);
-        showToast(`Added ${chip.label} to your list`, 'success');
-        speak(`Added ${chip.label}`);
-      });
-      el.suggestionRow.appendChild(btn);
-    });
-  }
-
-  // ---- Substitute prompt --------------------------------------------------
-  function maybeOfferSubstitute(name) {
-    const sub = SUBSTITUTES[name.toLowerCase()];
-    if (!sub) return;
-    showToast(`Prefer ${sub} instead of ${name}? Tap to swap.`, 'info');
-  }
-
-  // ---- Rendering the list ---------------------------------------------------
-  function render() {
-    el.listContainer.innerHTML = '';
-    el.emptyState.hidden = shoppingList.length !== 0;
-
-    const grouped = shoppingList.reduce((acc, item) => {
-      (acc[item.category] = acc[item.category] || []).push(item);
-      return acc;
-    }, {});
-
-    Object.keys(grouped)
-      .sort()
-      .forEach((category) => {
-        const section = document.createElement('div');
-        section.className = 'category-section';
-
-        const heading = document.createElement('div');
-        heading.className = 'category-heading';
-        heading.innerHTML = `<span>${escapeHtml(category)}</span><span class="category-dash">— — — — —</span>`;
-        section.appendChild(heading);
-
-        grouped[category].forEach((item) => {
-          section.appendChild(renderRow(item));
-        });
-
-        el.listContainer.appendChild(section);
-      });
-
-    const total = shoppingList.length;
-    const checked = shoppingList.filter((i) => i.checked).length;
-    el.itemCount.textContent = total === 0 ? 'Your list is empty' : `${checked} of ${total} checked off`;
-    el.clearCheckedBtn.hidden = checked === 0;
-
+    state.cart[id] = (state.cart[id] || 0) + qty;
+    state.history[id] = (state.history[id] || 0) + qty;
+    saveHistory();
+    if (showToast) toast(`✓ ${product.name} × ${packLabel(qty)}`);
+    renderCatalog();
+    renderCart();
     renderSuggestions();
   }
 
-  function renderRow(item) {
-    const row = document.createElement('div');
-    row.className = 'list-row' + (item.checked ? ' checked' : '');
+  // Shows a confirmation dialog with the product's details before it's
+  // actually added — this is the gate that stops a misheard/mismatched
+  // voice command, or a stray click, from silently changing the cart.
+  // Quantity adjustments on items already in the cart (+/- steppers) skip
+  // this, since that item was already explicitly confirmed once.
+  function requestAddToCart(id, qty, sourceLabel) {
+    const product = productById.get(id);
+    if (!product) return;
 
-    const check = document.createElement('button');
-    check.className = 'check-btn';
-    check.type = 'button';
-    check.setAttribute('aria-label', item.checked ? 'Mark as not bought' : 'Mark as bought');
-    check.innerHTML = item.checked ? '✓' : '';
-    check.addEventListener('click', () => toggleChecked(item.id));
-    row.appendChild(check);
-
-    const label = document.createElement('div');
-    label.className = 'row-label';
-    const qtyText = item.unit ? `${item.quantity} ${item.unit}${item.quantity > 1 ? 's' : ''}` : `x${item.quantity}`;
-    label.innerHTML = `<span class="row-name">${escapeHtml(item.name)}</span><span class="row-qty">${escapeHtml(qtyText)}</span>`;
-    row.appendChild(label);
-
-    const remove = document.createElement('button');
-    remove.className = 'remove-btn';
-    remove.type = 'button';
-    remove.setAttribute('aria-label', `Remove ${item.name}`);
-    remove.textContent = '✕';
-    remove.addEventListener('click', () => removeById(item.id));
-    row.appendChild(remove);
-
-    return row;
-  }
-
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  // ---- Search / voice-activated catalog lookup ------------------------------
-  function runSearch(query, priceLimit) {
-    const lower = query.toLowerCase().trim();
-    const withinPrice = (p) => priceLimit == null || p.price <= priceLimit;
-
-    // Whole-word match first (query as its own word in name/brand/category)
-    // — a plain substring search on ~2,250 real product names returns noise
-    // like "Sandalwood" for "dal" or "Matta Rice" for "atta". Only fall back
-    // to loose substring matching if the word-boundary search comes up
-    // empty, so partial-word queries like "choc" still find "Chocolate".
-    const wordRe = new RegExp(`\\b${escapeRegex(lower)}`, 'i');
-    let matches = productCatalog.filter(
-      (p) => withinPrice(p) && (wordRe.test(p.name) || wordRe.test(p.brand) || wordRe.test(p.category))
-    );
-    if (matches.length === 0) {
-      matches = productCatalog.filter((p) => {
-        const matchesText = p.name.toLowerCase().includes(lower) || p.brand.toLowerCase().includes(lower)
-          || p.category.toLowerCase().includes(lower);
-        return withinPrice(p) && matchesText;
-      });
-    }
-
-    // Rank: exact/prefix name matches first, then by rating (real
-    // BigBasket ratings where available), then by price. Cap the count —
-    // the real catalog has ~2,250 items, so a broad query like "milk"
-    // can otherwise return well over a hundred rows.
-    matches.sort((a, b) => {
-      const aStarts = a.name.toLowerCase().startsWith(lower) ? 0 : 1;
-      const bStarts = b.name.toLowerCase().startsWith(lower) ? 0 : 1;
-      if (aStarts !== bStarts) return aStarts - bStarts;
-      const aRating = a.rating || 0;
-      const bRating = b.rating || 0;
-      if (aRating !== bRating) return bRating - aRating;
-      return a.price - b.price;
-    });
-
-    const results = matches.slice(0, SEARCH_RESULT_CAP);
-    renderSearchResults(results, query, matches.length);
-    return matches;
-  }
-
-  function escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
-  function renderSearchResults(results, query, totalCount) {
-    el.searchResults.innerHTML = '';
-    if (results.length === 0) {
-      el.searchResults.hidden = false;
-      el.searchResults.innerHTML = `<p class="search-empty">No matches for "${escapeHtml(query)}". Try a different word or brand.</p>`;
+    if (stockStatus(id) === 'out') {
+      toast(`${product.name} — ${t('outOfStock', state.lang)}`, 'error');
+      offerSubstitutes(product);
       return;
     }
-    el.searchResults.hidden = false;
-    results.forEach((product) => {
-      const card = document.createElement('div');
-      card.className = 'result-card';
-      const ratingText = product.rating ? ` · ★${product.rating}` : '';
-      card.innerHTML = `
-        <div class="result-main">
-          <span class="result-name">${escapeHtml(product.name)}</span>
-          <span class="result-meta">${escapeHtml(product.brand)} · ${escapeHtml(product.category)}${ratingText}</span>
+
+    const lineTotal = (product.price * qty).toFixed(0);
+    confirmAddCard.innerHTML = `
+      <h3 class="confirm-title">${t('confirmAddTitle', state.lang)}</h3>
+      <div class="confirm-product">
+        <div>
+          <div class="cp-name">${escapeHTML(product.name)}</div>
+          <div class="cp-meta">${escapeHTML(product.brand || '')} ${product.brand ? '·' : ''} ${product.subCategory}</div>
+          <div class="cp-qty">${packLabel(qty)} · ₹${product.price} ${state.lang === 'hi-IN' ? 'प्रति पैक' : 'per pack'}</div>
         </div>
-        <div class="result-price">₹${product.price.toFixed(0)}</div>
-      `;
-      const addBtn = document.createElement('button');
-      addBtn.className = 'result-add';
-      addBtn.type = 'button';
-      addBtn.textContent = 'Add';
-      addBtn.addEventListener('click', () => {
-        addItem(product.name, 1, null, product.category);
-        showToast(`Added ${product.name} to your list`, 'success');
-        speak(`Added ${product.name}`);
-      });
-      card.appendChild(addBtn);
-      el.searchResults.appendChild(card);
+        <div class="cp-price">₹${lineTotal}</div>
+      </div>
+      <div class="confirm-actions">
+        <button type="button" class="confirm-cancel" id="confirmCancelBtn">${t('confirmCancelBtn', state.lang)}</button>
+        <button type="button" class="confirm-ok" id="confirmOkBtn">${t('confirmAddBtn', state.lang)}</button>
+      </div>
+    `;
+    confirmAddModal.classList.add('is-open');
+    confirmAddModal.setAttribute('aria-hidden', 'false');
+    confirmOverlay.hidden = false;
+
+    const closeConfirm = () => {
+      confirmAddModal.classList.remove('is-open');
+      confirmAddModal.setAttribute('aria-hidden', 'true');
+      confirmOverlay.hidden = true;
+    };
+
+    document.getElementById('confirmOkBtn').addEventListener('click', () => {
+      closeConfirm();
+      addToCart(id, qty, true);
+      if (sourceLabel) logToTicker(sourceLabel, 'log-add');
     });
-    if (totalCount > results.length) {
-      const more = document.createElement('p');
-      more.className = 'search-empty';
-      more.textContent = `Showing top ${results.length} of ${totalCount} matches — refine your search for more specific results.`;
-      el.searchResults.appendChild(more);
-    }
+    document.getElementById('confirmCancelBtn').addEventListener('click', () => {
+      closeConfirm();
+      toast(state.lang === 'hi-IN' ? 'नहीं जोड़ा गया' : 'Not added', 'error');
+    });
+    confirmOverlay.addEventListener('click', closeConfirm, { once: true });
   }
 
-  // ---- Command dispatch -----------------------------------------------------
-  function handleTranscript(text) {
-    el.transcript.textContent = `"${text}"`;
-    const command = parseCommand(text);
-
-    switch (command.intent) {
-      case 'add': {
-        const category = addItem(command.item, command.quantity, command.unit);
-        showToast(`Added ${command.item} (${category})`, 'success');
-        speak(`Added ${command.item} to your ${category} list`);
-        maybeOfferSubstitute(command.item);
-        break;
-      }
-      case 'remove': {
-        const removed = removeItemByName(command.item);
-        if (removed) {
-          showToast(`Removed ${command.item}`, 'success');
-          speak(`Removed ${command.item}`);
-        } else {
-          showToast(`Couldn't find ${command.item} on your list`, 'warn');
-          speak(`I couldn't find ${command.item} on your list`);
-        }
-        break;
-      }
-      case 'search': {
-        const results = runSearch(command.item, command.priceLimit);
-        showToast(`${results.length} result${results.length === 1 ? '' : 's'} for "${command.item}"`, 'info');
-        break;
-      }
-      case 'clear': {
-        clearAll();
-        showToast('List cleared', 'success');
-        speak('Your list is now empty');
-        break;
-      }
-      default: {
-        showToast(`Didn't catch that as a command. Try "Add milk" or "Find toothpaste under $5".`, 'warn');
-        speak(`Sorry, I didn't understand that.`);
-      }
-    }
+  function removeFromCart(id, qty) {
+    const product = productById.get(id);
+    if (!state.cart[id]) return;
+    state.cart[id] -= qty;
+    if (state.cart[id] <= 0) delete state.cart[id];
+    renderCatalog();
+    renderCart();
+    renderSuggestions();
+    if (product) toast(`− ${product.name}`);
   }
 
-  // ---- Speech recognition setup ---------------------------------------------
-  function setUpRecognition() {
-    const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionImpl) {
-      el.supportWarning.hidden = false;
-      el.micButton.disabled = true;
-      el.micStatus.textContent = 'Voice input is not supported in this browser — use the text box below.';
+  function setCartQty(id, qty) {
+    if (qty <= 0) { delete state.cart[id]; }
+    else { state.cart[id] = qty; }
+    renderCatalog();
+    renderCart();
+    renderSuggestions();
+  }
+
+  function clearCart() {
+    state.cart = {};
+    renderCatalog();
+    renderCart();
+    renderSuggestions();
+    toast(t('clearList', state.lang));
+  }
+
+  function cartLineHTML(id, qty) {
+    const p = productById.get(id);
+    if (!p) return '';
+    return `
+      <div class="cart-line">
+        <div class="cl-info">
+          <div class="cl-name">${escapeHTML(p.name)}</div>
+          <div class="cl-sub">${p.subCategory} · ₹${p.price}</div>
+          <div class="cl-qty">
+            <button type="button" data-action="dec" data-id="${id}" aria-label="Decrease">−</button>
+            <span>${packLabel(qty)}</span>
+            <button type="button" data-action="inc" data-id="${id}" aria-label="Increase">+</button>
+          </div>
+          <button class="cl-remove" type="button" data-action="del" data-id="${id}">${state.lang === 'hi-IN' ? 'हटाएं' : 'Remove'}</button>
+        </div>
+        <div class="cl-price">₹${(p.price * qty).toFixed(0)}</div>
+      </div>`;
+  }
+
+  function renderCart() {
+    const ids = Object.keys(state.cart).map(Number);
+    cartItemsEl.innerHTML = ids.map(id => cartLineHTML(id, state.cart[id])).join('');
+    cartEmptyMsg.hidden = ids.length > 0;
+
+    cartItemsEl.querySelectorAll('[data-action="inc"]').forEach(btn =>
+      btn.addEventListener('click', () => addToCart(Number(btn.dataset.id), 1, false)));
+    cartItemsEl.querySelectorAll('[data-action="dec"]').forEach(btn =>
+      btn.addEventListener('click', () => removeFromCart(Number(btn.dataset.id), 1)));
+    cartItemsEl.querySelectorAll('[data-action="del"]').forEach(btn =>
+      btn.addEventListener('click', () => setCartQty(Number(btn.dataset.id), 0)));
+
+    const subtotal = ids.reduce((sum, id) => sum + productById.get(id).price * state.cart[id], 0);
+    const tax = subtotal * 0.05;
+    cartSubtotalEl.textContent = `₹${subtotal.toFixed(0)}`;
+    cartTaxEl.textContent = `₹${tax.toFixed(0)}`;
+    cartTotalEl.textContent = `₹${(subtotal + tax).toFixed(0)}`;
+
+    const totalCount = ids.reduce((sum, id) => sum + state.cart[id], 0);
+    cartCountEl.textContent = totalCount;
+    checkoutBtn.disabled = totalCount === 0;
+  }
+
+  // ---------------------------------------------------------------------
+  // Smart suggestions
+  // ---------------------------------------------------------------------
+  function renderSuggestions() {
+    const cartIds = Object.keys(state.cart).map(Number);
+    const inCart = new Set(cartIds);
+    const picks = new Map(); // id -> reason label
+
+    // 1. frequently bought together, based on current cart's sub-categories
+    cartIds.forEach(id => {
+      const p = productById.get(id);
+      const pairs = PAIR_SUGGESTIONS[p.subCategory] || [];
+      pairs.forEach(subCat => {
+        PRODUCTS.filter(x => x.subCategory === subCat && !inCart.has(x.id) && stockStatus(x.id) !== 'out')
+          .slice(0, 2)
+          .forEach(x => { if (!picks.has(x.id)) picks.set(x.id, 'pairsWith'); });
+      });
+    });
+
+    // 2. your usual picks, from persisted history, not already in cart
+    const historyIds = Object.entries(state.history)
+      .sort((a, b) => b[1] - a[1])
+      .map(([id]) => Number(id))
+      .filter(id => !inCart.has(id) && productById.has(id) && stockStatus(id) !== 'out');
+    historyIds.slice(0, 3).forEach(id => { if (!picks.has(id)) picks.set(id, 'usual'); });
+
+    // 3. seasonal picks
+    PRODUCTS.filter(p => isSeasonal(p) && !inCart.has(p.id) && stockStatus(p.id) !== 'out')
+      .slice(0, 2)
+      .forEach(p => { if (!picks.has(p.id)) picks.set(p.id, 'seasonal'); });
+
+    const finalPicks = [...picks.entries()].slice(0, 8);
+    suggestionsSection.hidden = finalPicks.length === 0;
+    if (!finalPicks.length) return;
+
+    const labelFor = reason => ({
+      pairsWith: state.lang === 'hi-IN' ? 'साथ में लें' : 'Goes well together',
+      usual: state.lang === 'hi-IN' ? 'आपकी पसंद' : 'You usually buy this',
+      seasonal: state.lang === 'hi-IN' ? 'सीज़नल' : 'In season now',
+    }[reason]);
+
+    suggestionScroll.innerHTML = finalPicks.map(([id, reason]) => {
+      const p = productById.get(id);
+      return `
+        <div class="sugg-card">
+          <span class="sugg-badge">${labelFor(reason)}</span>
+          <div class="sugg-name">${escapeHTML(p.name)}</div>
+          <div class="sugg-price">₹${p.price}</div>
+          <button type="button" data-id="${p.id}">+ ${t('addToList', state.lang)}</button>
+        </div>`;
+    }).join('');
+
+    suggestionScroll.querySelectorAll('button').forEach(btn =>
+      btn.addEventListener('click', () => requestAddToCart(Number(btn.dataset.id), 1)));
+  }
+
+  function offerSubstitutes(unavailableProduct) {
+    const alts = PRODUCTS.filter(p =>
+      p.subCategory === unavailableProduct.subCategory &&
+      p.id !== unavailableProduct.id &&
+      stockStatus(p.id) !== 'out'
+    ).sort((a, b) => (b.rating || 0) - (a.rating || 0)).slice(0, 4);
+    if (!alts.length) return;
+    state.activeCategory = 'all';
+    state.searchQuery = '';
+    productGrid.innerHTML = alts.map(productCardHTML).join('');
+    resultsHeading.textContent = state.lang === 'hi-IN' ? 'इसके बदले ये आज़माएं' : 'Try these instead';
+    resultsCount.textContent = '';
+    emptyState.hidden = true;
+    bindCardEvents();
+    logToTicker(
+      state.lang === 'hi-IN'
+        ? `${unavailableProduct.name} स्टॉक में नहीं है — विकल्प दिखाए गए`
+        : `${unavailableProduct.name} is out of stock — showing substitutes`,
+      'log-info'
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Command execution (shared by voice + typed input)
+  // ---------------------------------------------------------------------
+  function executeCommand(rawText) {
+    const cmd = parseCommand(rawText);
+
+    if (cmd.intent === 'clearCart') {
+      clearCart();
+      logToTicker(`"${rawText}" → ${state.lang === 'hi-IN' ? 'सूची खाली की गई' : 'list cleared'}`, 'log-remove');
       return;
     }
 
-    recognition = new SpeechRecognitionImpl();
+    if (cmd.intent === 'checkout') {
+      openCheckout();
+      logToTicker(`"${rawText}" → ${state.lang === 'hi-IN' ? 'चेकआउट खोला गया' : 'opening checkout'}`, 'log-info');
+      return;
+    }
+
+    if (cmd.intent === 'search') {
+      state.searchQuery = cmd.rawQuery || rawText;
+      state.activeCategory = 'all';
+      state.priceMax = cmd.priceMax;
+      maxPriceInput.value = cmd.priceMax || '';
+      renderChips();
+      renderCatalog();
+      const results = getFilteredProducts();
+      logToTicker(
+        `"${rawText}" → ${results.length} ${state.lang === 'hi-IN' ? 'परिणाम मिले' : 'results found'}`,
+        'log-info'
+      );
+      return;
+    }
+
+    // add / remove: resolve to a specific product using the strict
+    // confident-match resolver — if the exact item asked for isn't in the
+    // catalog (wrong flavour, wrong brand, not stocked at all), this
+    // returns null rather than guessing at the closest-sounding substitute,
+    // and nothing gets added.
+    const best = findConfidentMatch(PRODUCTS, cmd);
+    if (!best) {
+      logToTicker(`"${rawText}" → ${t('notFoundTicker', state.lang)}`, 'log-remove');
+      toast(t('notFoundToast', state.lang), 'error');
+      return;
+    }
+
+    if (cmd.intent === 'remove') {
+      if (state.cart[best.id]) {
+        removeFromCart(best.id, state.cart[best.id]);
+        logToTicker(`"${rawText}" → ${state.lang === 'hi-IN' ? 'हटाया गया' : 'removed'}: ${best.name}`, 'log-remove');
+      } else {
+        logToTicker(
+          `"${rawText}" → ${best.name} ${state.lang === 'hi-IN' ? 'सूची में नहीं थी' : 'was not in your list'}`,
+          'log-info'
+        );
+      }
+      return;
+    }
+
+    // add — ask for confirmation before it actually lands in the cart
+    if (stockStatus(best.id) === 'out') {
+      logToTicker(`"${rawText}" → ${best.name} ${state.lang === 'hi-IN' ? 'स्टॉक में नहीं' : 'is out of stock'}`, 'log-info');
+      requestAddToCart(best.id, cmd.quantity); // will trigger substitute offer
+      return;
+    }
+    const addedLabel = `"${rawText}" → ${state.lang === 'hi-IN' ? 'जोड़ा गया' : 'added'}: ${best.name} × ${packLabel(cmd.quantity)}`;
+    requestAddToCart(best.id, cmd.quantity, addedLabel);
+  }
+
+  // ---------------------------------------------------------------------
+  // Speech recognition
+  // ---------------------------------------------------------------------
+  // Browsers ask for microphone permission again on every recognition.start()
+  // call unless something keeps the mic "actively granted" between uses. The
+  // fix: request access once via getUserMedia (the single real permission
+  // prompt for the whole visit) and hold that stream open in memory for the
+  // life of the page. SpeechRecognition then reuses the already-granted
+  // permission instead of negotiating it fresh each click. The stream is
+  // only released when the page is closed/navigated away from, which is
+  // also the only point the permission grant should reset.
+  let recognition = null;
+  let listening = false;
+  let micStream = null;          // held open for the page's lifetime once granted
+  let micPermissionState = 'unrequested'; // 'unrequested' | 'requesting' | 'granted' | 'denied'
+
+  function setupRecognition() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      micStatus.textContent = t('micUnsupported', state.lang);
+      micButton.disabled = true;
+      micButton.style.opacity = '0.5';
+      return;
+    }
+    recognition = new SR();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    recognition.lang = currentLang;
+    recognition.lang = state.lang;
 
     recognition.onstart = () => {
-      isListening = true;
-      el.micButton.classList.add('listening');
-      el.micStatus.textContent = 'Listening…';
+      listening = true;
+      micButton.classList.add('listening');
+      micButton.setAttribute('aria-pressed', 'true');
+      micStatus.textContent = t('listening', state.lang);
     };
 
     recognition.onresult = (event) => {
-      let interim = '';
-      let final = '';
+      let transcript = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const chunk = event.results[i][0].transcript;
-        if (event.results[i].isFinal) final += chunk;
-        else interim += chunk;
+        transcript += event.results[i][0].transcript;
       }
-      if (interim) el.transcript.textContent = `"${interim}"`;
-      if (final) handleTranscript(final.trim());
+      if (event.results[event.results.length - 1].isFinal) {
+        micStatus.textContent = t('processing', state.lang);
+        cmdInput.value = transcript;
+        executeCommand(transcript);
+      }
     };
 
     recognition.onerror = (event) => {
-      isListening = false;
-      el.micButton.classList.remove('listening');
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      listening = false;
+      micButton.classList.remove('listening');
+      micButton.setAttribute('aria-pressed', 'false');
+      if (event.error === 'not-allowed' || event.error === 'permission-denied') {
         micPermissionState = 'denied';
-        el.micStatus.textContent = 'Microphone access was denied. Allow it in your browser settings to use voice input.';
+        toast(t('micDenied', state.lang), 'error');
       } else if (event.error === 'no-speech') {
-        el.micStatus.textContent = "Didn't hear anything — tap the mic and try again.";
+        toast(state.lang === 'hi-IN' ? 'कुछ सुनाई नहीं दिया' : 'Did not catch that — try again', 'error');
       } else {
-        el.micStatus.textContent = `Voice error: ${event.error}. You can still type commands below.`;
+        toast(state.lang === 'hi-IN' ? 'वॉइस में समस्या हुई' : 'Voice recognition error', 'error');
       }
+      micStatus.textContent = t('tapToSpeak', state.lang);
     };
 
     recognition.onend = () => {
-      isListening = false;
-      el.micButton.classList.remove('listening');
-      if (el.micStatus.textContent === 'Listening…') {
-        el.micStatus.textContent = 'Tap the mic and speak a command';
-      }
+      listening = false;
+      micButton.classList.remove('listening');
+      micButton.setAttribute('aria-pressed', 'false');
+      micStatus.textContent = t('tapToSpeak', state.lang);
     };
   }
 
-  function toggleListening() {
-    if (!recognition) return;
-    if (isListening) {
-      recognition.stop();
-      return;
+  // One-time (per page load) permission request. Once granted, we never
+  // call getUserMedia again for the rest of the page's life — even if the
+  // held stream's tracks later end for some unrelated browser reason (tab
+  // backgrounded, power-saving, etc). Re-checking "is the stream still
+  // live" here was the actual bug: it caused a second real getUserMedia()
+  // call — and therefore a second permission prompt — the moment that
+  // stream naturally lapsed, which defeats the whole point of holding it
+  // open in the first place. The permission grant itself doesn't go away
+  // just because a track ended, so we don't need to re-verify it.
+  async function ensureMicPermission() {
+    if (micPermissionState === 'granted') return true;
+    if (micPermissionState === 'denied') return false;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      // Older browsers without the modern API — let SpeechRecognition handle
+      // its own prompt directly; nothing more we can do to control it.
+      return true;
     }
-    ensureMicAccess().then((granted) => {
-      if (!granted) return;
-      recognition.lang = currentLang;
-      try {
-        recognition.start();
-      } catch (err) {
-        // start() throws if called while already active; ignore.
+    micPermissionState = 'requesting';
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micPermissionState = 'granted';
+      return true;
+    } catch (err) {
+      micPermissionState = 'denied';
+      toast(t('micDenied', state.lang), 'error');
+      micStatus.textContent = t('tapToSpeak', state.lang);
+      return false;
+    }
+  }
+
+  // Release the mic the moment the page is actually closed/navigated away
+  // from — this is the only point the permission grant should "reset".
+  function releaseMicOnUnload() {
+    if (micStream) {
+      micStream.getTracks().forEach(track => track.stop());
+      micStream = null;
+    }
+  }
+  window.addEventListener('pagehide', releaseMicOnUnload);
+  window.addEventListener('beforeunload', releaseMicOnUnload);
+
+  // Defensive extra: if the browser itself already reports the microphone
+  // as granted or denied for this origin (e.g. the page was reloaded, not
+  // freshly opened), reflect that immediately instead of waiting to find
+  // out on the next click. Not all browsers support this query, so it's
+  // wrapped and ignored where unavailable — the click-time flow above
+  // still works correctly either way.
+  async function syncKnownMicPermission() {
+    if (!navigator.permissions || !navigator.permissions.query) return;
+    try {
+      const status = await navigator.permissions.query({ name: 'microphone' });
+      if (status.state === 'granted' || status.state === 'denied') {
+        micPermissionState = status.state;
       }
-    });
+      status.onchange = () => {
+        if (status.state === 'denied') micPermissionState = 'denied';
+      };
+    } catch (e) { /* Permissions API doesn't support 'microphone' in this browser */ }
   }
 
-  // ---- Event wiring -----------------------------------------------------------
-  function populateLanguages() {
-    SUPPORTED_LANGUAGES.forEach((lang) => {
-      const opt = document.createElement('option');
-      opt.value = lang.code;
-      opt.textContent = lang.label;
-      el.langSelect.appendChild(opt);
+  micButton.addEventListener('click', async () => {
+    if (!recognition) return;
+    if (listening) { recognition.stop(); return; }
+
+    const allowed = await ensureMicPermission();
+    if (!allowed) return;
+
+    try { recognition.lang = state.lang; recognition.start(); }
+    catch (e) { /* already started */ }
+  });
+
+  // ---------------------------------------------------------------------
+  // Language toggle
+  // ---------------------------------------------------------------------
+  document.querySelectorAll('.lang-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      state.lang = btn.dataset.lang;
+      applyStaticTranslations(state.lang);
+      renderChips();
+      renderCatalog();
+      renderCart();
+      renderSuggestions();
+      micStatus.textContent = t('tapToSpeak', state.lang);
     });
-    el.langSelect.value = currentLang;
+  });
+
+  // ---------------------------------------------------------------------
+  // Text command form (fallback + always-available search)
+  // ---------------------------------------------------------------------
+  cmdForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const val = cmdInput.value.trim();
+    if (!val) return;
+    executeCommand(val);
+  });
+
+  maxPriceInput.addEventListener('input', () => {
+    const v = maxPriceInput.value;
+    state.priceMax = v === '' ? null : Number(v);
+    renderCatalog();
+  });
+
+  sortSelect.addEventListener('change', () => {
+    state.sortBy = sortSelect.value;
+    renderCatalog();
+  });
+
+  // ---------------------------------------------------------------------
+  // Cart drawer open/close
+  // ---------------------------------------------------------------------
+  function openCart() {
+    cartDrawer.classList.add('is-open');
+    cartDrawer.setAttribute('aria-hidden', 'false');
+    cartOverlay.hidden = false;
   }
-
-  function bindEvents() {
-    el.micButton.addEventListener('click', toggleListening);
-
-    el.langSelect.addEventListener('change', (e) => {
-      currentLang = e.target.value;
-      if (recognition) recognition.lang = currentLang;
-    });
-
-    el.textForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const value = el.textInput.value.trim();
-      if (!value) return;
-      handleTranscript(value);
-      el.textInput.value = '';
-    });
-
-    el.clearCheckedBtn.addEventListener('click', clearChecked);
+  function closeCart() {
+    cartDrawer.classList.remove('is-open');
+    cartDrawer.setAttribute('aria-hidden', 'true');
+    cartOverlay.hidden = true;
   }
+  cartToggle.addEventListener('click', openCart);
+  cartClose.addEventListener('click', closeCart);
+  cartOverlay.addEventListener('click', closeCart);
+  clearCartBtn.addEventListener('click', clearCart);
 
-  // ---- Init -----------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // Home — returns to the initial landing view: full catalog, no active
+  // search/filters, any open drawers or modals closed. This does NOT touch
+  // the cart itself (going "home" is navigation, not a reset of your list).
+  // ---------------------------------------------------------------------
+  function goHome() {
+    state.activeCategory = 'all';
+    state.searchQuery = '';
+    state.priceMax = null;
+    state.sortBy = 'relevance';
+
+    cmdInput.value = '';
+    maxPriceInput.value = '';
+    sortSelect.value = 'relevance';
+
+    closeCart();
+    if (checkoutModal.classList.contains('is-open')) {
+      checkoutModal.classList.remove('is-open');
+      checkoutModal.setAttribute('aria-hidden', 'true');
+      checkoutOverlay.hidden = true;
+    }
+    if (confirmAddModal.classList.contains('is-open')) {
+      confirmAddModal.classList.remove('is-open');
+      confirmAddModal.setAttribute('aria-hidden', 'true');
+      confirmOverlay.hidden = true;
+    }
+
+    renderChips();
+    renderCatalog();
+    renderSuggestions();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  homeButton.addEventListener('click', goHome);
+  brandHomeButton.addEventListener('click', goHome);
+
+  // ---------------------------------------------------------------------
+  // Checkout modal
+  // ---------------------------------------------------------------------
+  function openCheckout() {
+    const ids = Object.keys(state.cart).map(Number);
+    if (!ids.length) { toast(state.lang === 'hi-IN' ? 'सूची खाली है' : 'Your list is empty', 'error'); return; }
+    const orderId = 'BB' + Math.floor(100000 + Math.random() * 900000);
+    checkoutCard.innerHTML = `
+      <div class="stamp">✓</div>
+      <h3>${t('orderPlaced', state.lang)}</h3>
+      <p>${t('orderThanks', state.lang)}</p>
+      <div class="order-id">${t('orderId', state.lang)}: ${orderId}</div>
+      <button class="modal-close" type="button" id="checkoutDoneBtn">${t('done', state.lang)}</button>
+    `;
+    checkoutModal.classList.add('is-open');
+    checkoutModal.setAttribute('aria-hidden', 'false');
+    checkoutOverlay.hidden = false;
+    closeCart();
+    document.getElementById('checkoutDoneBtn').addEventListener('click', () => {
+      checkoutModal.classList.remove('is-open');
+      checkoutModal.setAttribute('aria-hidden', 'true');
+      checkoutOverlay.hidden = true;
+      clearCart();
+    });
+  }
+  checkoutBtn.addEventListener('click', openCheckout);
+  checkoutOverlay.addEventListener('click', () => {
+    checkoutModal.classList.remove('is-open');
+    checkoutModal.setAttribute('aria-hidden', 'true');
+    checkoutOverlay.hidden = true;
+  });
+
+  // ---------------------------------------------------------------------
+  // Init
+  // ---------------------------------------------------------------------
   function init() {
-    populateLanguages();
-    setUpRecognition();
-    bindEvents();
-    render();
-    initMicPermission();
-    loadCatalog();
+    applyStaticTranslations(state.lang);
+    renderChips();
+    renderCatalog();
+    renderCart();
+    renderSuggestions();
+    setupRecognition();
+    syncKnownMicPermission();
   }
 
   document.addEventListener('DOMContentLoaded', init);

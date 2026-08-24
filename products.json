@@ -1,6 +1,4 @@
-// Auto-generated from BigBasket product dataset (curated subset of grocery items)
-// Categories: Beverages, Bakery/Dairy, Foodgrains/Oil/Masala, Snacks, Fruits & Vegetables, Eggs/Meat/Fish
-const PRODUCTS = [
+[
   {
     "id": 1,
     "name": "Fresh Toned Milk",
@@ -2841,4 +2839,4 @@ const PRODUCTS = [
     "mrp": 225.0,
     "rating": null
   }
-];
+]

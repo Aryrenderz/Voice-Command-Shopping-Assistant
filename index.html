@@ -2,75 +2,150 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Voice Cart — Voice Command Shopping Assistant</title>
-<meta name="description" content="A voice-first shopping list: speak or type to add, remove, search and get smart suggestions.">
-<link rel="stylesheet" href="css/style.css">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bol Basket — Voice Shopping Assistant</title>
+<meta name="description" content="A bilingual (English/Hindi) voice-controlled grocery shopping list with smart suggestions, built on the BigBasket product catalog.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="app-shell">
 
-    <header class="app-header">
-      <h1 class="app-title">Voice<span class="accent">Cart</span></h1>
-      <select id="lang-select" aria-label="Voice recognition language"></select>
-    </header>
-
-    <p id="support-warning" class="support-warning" hidden>
-      Your browser doesn't support voice recognition. You can still manage your list with the text box below.
-    </p>
-
-    <section class="hero">
-      <div class="mic-wrap">
-        <span class="mic-ring ring-1"></span>
-        <span class="mic-ring ring-2"></span>
-        <span class="mic-ring ring-3"></span>
-        <button id="mic-button" type="button" aria-label="Start voice command">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/>
-            <path d="M19 11a7 7 0 0 1-14 0"/>
-            <line x1="12" y1="18" x2="12" y2="22"/>
-            <line x1="8" y1="22" x2="16" y2="22"/>
-          </svg>
-        </button>
+<!-- ============ HEADER : voice control deck ============ -->
+<header class="app-header">
+  <div class="header-inner">
+    <div class="brand">
+      <button id="brandHomeButton" class="brand-home-btn" type="button" aria-label="Home">
+        <span class="brand-mark" aria-hidden="true">बो</span>
+      </button>
+      <div class="brand-text">
+        <h1>Bol Basket</h1>
+        <p class="brand-tag" data-i18n="tagline">Speak it. Shop it.</p>
       </div>
-      <p id="mic-status">Tap the mic and speak a command</p>
-      <p id="transcript"></p>
-    </section>
+    </div>
 
-    <form id="text-form">
-      <input id="text-command" type="text" placeholder='Or type: "Add 2 kg atta"' autocomplete="off">
-      <button type="submit">Send</button>
-    </form>
+    <div class="voice-orb-wrap">
+      <button id="micButton" class="voice-orb" type="button" aria-pressed="false" aria-label="Start voice command">
+        <span class="orb-ring ring-1" aria-hidden="true"></span>
+        <span class="orb-ring ring-2" aria-hidden="true"></span>
+        <svg class="orb-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M19 11a7 7 0 0 1-14 0M12 18v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <span id="micStatus" class="mic-status" data-i18n="tapToSpeak">Tap to speak</span>
+    </div>
 
-    <div id="suggestion-row" class="suggestion-row" hidden></div>
-
-    <div id="search-results" class="search-results" hidden></div>
-
-    <section class="list-card">
-      <div class="list-header">
-        <h2 class="list-title">Your list</h2>
-        <span id="item-count"></span>
+    <div class="header-controls">
+      <button id="homeButton" class="home-btn" type="button" aria-label="Home">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 11.5 12 4l8 7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 10v9a1 1 0 0 0 1 1h3v-5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v5h3a1 1 0 0 0 1-1v-9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="lang-toggle" role="group" aria-label="Voice language">
+        <button class="lang-btn is-active" data-lang="en-IN" type="button">EN</button>
+        <button class="lang-btn" data-lang="hi-IN" type="button">हिं</button>
       </div>
-
-      <div id="empty-state" class="empty-state">
-        <strong>Nothing on your list yet</strong>
-        Say "Add doodh" or "I need aloo" to get started.
-      </div>
-
-      <div id="list-container"></div>
-
-      <div class="list-footer">
-        <button id="clear-checked" type="button" hidden>Clear checked items</button>
-      </div>
-    </section>
-
-    <footer class="hint">Try: "Remove doodh" · "Find toothpaste under ₹100" · "Clear my list"</footer>
+      <button id="cartToggle" class="cart-btn" type="button" aria-label="Open cart">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 4h2l2.4 12.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="21" r="1.4" fill="currentColor"/><circle cx="18" cy="21" r="1.4" fill="currentColor"/></svg>
+        <span id="cartCount" class="cart-count">0</span>
+      </button>
+    </div>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <!-- live transcript / feedback ticker -->
+  <div class="ticker" id="ticker" aria-live="polite">
+    <div class="ticker-inner" id="tickerInner">
+      <span class="ticker-item ticker-hint" data-i18n="tickerHint">Try saying "add two litres of milk" or "मुझे दूध चाहिए"</span>
+    </div>
+  </div>
+</header>
 
-  <script src="js/data.js"></script>
-  <script src="js/nlp.js"></script>
-  <script src="js/app.js"></script>
+<!-- ============ MAIN ============ -->
+<main class="app-main">
+
+  <!-- text command fallback + search -->
+  <section class="command-bar" aria-label="Search and type commands">
+    <form id="commandForm" class="command-form">
+      <svg class="cmd-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input id="commandInput" type="text" autocomplete="off"
+        data-i18n-placeholder="commandPlaceholder"
+        placeholder='Type a command or search — e.g. "add 2 bananas" or "toothpaste under 100"'>
+      <button type="submit" class="cmd-go" data-i18n="go">Go</button>
+    </form>
+    <div class="filter-row">
+      <div class="chip-scroll" id="categoryChips"></div>
+      <div class="filter-extra">
+        <label class="price-filter">
+          <span data-i18n="under">Under ₹</span>
+          <input id="maxPrice" type="number" min="0" placeholder="500">
+        </label>
+        <select id="sortSelect" aria-label="Sort products">
+          <option value="relevance" data-i18n="sortRelevance">Relevance</option>
+          <option value="price-asc" data-i18n="sortPriceAsc">Price: Low to High</option>
+          <option value="price-desc" data-i18n="sortPriceDesc">Price: High to Low</option>
+          <option value="rating" data-i18n="sortRating">Top Rated</option>
+        </select>
+      </div>
+    </div>
+  </section>
+
+  <!-- suggestions strip -->
+  <section class="suggestions" id="suggestionsSection" hidden>
+    <h2 id="suggestionsTitle" data-i18n="suggestionsTitle">You might also need</h2>
+    <div class="suggestion-scroll" id="suggestionScroll"></div>
+  </section>
+
+  <!-- product grid -->
+  <section class="catalog" aria-label="Product catalog">
+    <div class="catalog-head">
+      <h2 id="resultsHeading" data-i18n="allProducts">All products</h2>
+      <span id="resultsCount" class="results-count"></span>
+    </div>
+    <div id="productGrid" class="product-grid"></div>
+    <p id="emptyState" class="empty-state" hidden data-i18n="noResults">No products matched. Try another word, or check the suggestions above.</p>
+  </section>
+</main>
+
+<!-- ============ CART DRAWER (receipt style) ============ -->
+<div id="cartOverlay" class="cart-overlay" hidden></div>
+<aside id="cartDrawer" class="cart-drawer" aria-label="Shopping cart" aria-hidden="true">
+  <div class="receipt">
+    <div class="receipt-head">
+      <h2 data-i18n="yourList">Your List</h2>
+      <button id="cartClose" class="icon-btn" aria-label="Close cart" type="button">✕</button>
+    </div>
+    <div class="receipt-perforation" aria-hidden="true"></div>
+    <div id="cartItems" class="cart-items"></div>
+    <p id="cartEmptyMsg" class="cart-empty" data-i18n="cartEmpty">Your list is empty. Say “add milk” to begin.</p>
+    <div class="receipt-perforation" aria-hidden="true"></div>
+    <div class="receipt-totals">
+      <div class="totals-row"><span data-i18n="subtotal">Subtotal</span><span id="cartSubtotal">₹0</span></div>
+      <div class="totals-row"><span data-i18n="tax">Taxes &amp; charges (5%)</span><span id="cartTax">₹0</span></div>
+      <div class="totals-row total-final"><span data-i18n="total">Total</span><span id="cartTotal">₹0</span></div>
+    </div>
+    <button id="clearCartBtn" class="link-btn" type="button" data-i18n="clearList">Clear list</button>
+    <button id="checkoutBtn" class="checkout-btn" type="button" data-i18n="checkout">Checkout</button>
+  </div>
+</aside>
+
+<!-- ============ CHECKOUT MODAL ============ -->
+<div id="checkoutOverlay" class="cart-overlay" hidden></div>
+<div id="checkoutModal" class="checkout-modal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="checkout-card" id="checkoutCard"></div>
+</div>
+
+<!-- ============ ADD-TO-CART CONFIRMATION ============ -->
+<div id="confirmOverlay" class="cart-overlay" hidden></div>
+<div id="confirmAddModal" class="checkout-modal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="checkout-card confirm-card" id="confirmAddCard"></div>
+</div>
+
+<!-- toast for quick confirmations -->
+<div id="toastHost" class="toast-host" aria-live="assertive"></div>
+
+<script src="data.js"></script>
+<script src="i18n.js"></script>
+<script src="nlp.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
