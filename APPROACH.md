@@ -1,8 +1,8 @@
-# Approach (≤200 words)
+# Approach
 
 I built Bol Basket as a static, dependency-free web app (HTML/CSS/JS) so it
-runs anywhere with zero build tooling and stays auditable within an 8-hour
-scope. The Web Speech API handles voice capture in English and Hindi; a
+runs anywhere with zero build tooling and stays auditable. 
+The Web Speech API handles voice capture in English and Hindi; a
 hand-written rule-based parser (`nlp.js`) turns the transcript into an
 intent (add/remove/search/checkout), a quantity, and a canonical product
 term, using a bilingual synonym table so "milk", "doodh", and "दूध" all
@@ -19,4 +19,4 @@ suggestions combine three simple signals: sub-category pairing ("goes well
 together"), a `localStorage`-backed purchase history ("you usually buy
 this"), and a month-based seasonal calendar. Every voice action is mirrored
 by a typed command box, so the app degrades gracefully on browsers without
-speech support (e.g. Firefox).
+speech support.
