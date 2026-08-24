@@ -10,9 +10,18 @@ Built as a technical assessment project against the brief in
 summary the brief asks for is in [`docs/APPROACH.md`](docs/APPROACH.md); the
 full build log is in [`docs/DEVELOPMENT_LOG.md`](docs/DEVELOPMENT_LOG.md).
 
-**Live demo:** _add your deployed URL here after publishing — see [Deployment](#deployment)_
+**Live demo:** **[Launch Voice-Command Shopping Assistant](https://voice-command-shopping-assistant-murex-nu.vercel.app/)**
 
----
+**Note:** Please ensure you allow microphone permissions in your browser when prompted so the voice recognition features work properly.
+
+## Local Setup Instructions
+
+If you want to run this project locally on your machine:
+
+1. **Clone the repository:**
+   ```bash
+   git clone [https://github.com/Aryrenderz/Voice-Command-Shopping-Assistant.git](https://github.com/Aryrenderz/Voice-Command-Shopping-Assistant.git)
+   cd Voice-Command-Shopping-Assistant
 
 ## What it does
 
@@ -26,8 +35,8 @@ full build log is in [`docs/DEVELOPMENT_LOG.md`](docs/DEVELOPMENT_LOG.md).
 | Substitutes | Out-of-stock items automatically surface 4 alternatives from the same shelf |
 | Add / remove / modify items | Voice or typed commands, plus +/− steppers on every product card and cart line |
 | Auto-categorization | Every product carries its BigBasket category & sub-category, used for filter chips and grouping |
-| Quantity via voice | "add 2 bananas", "3 kele jodo", "ek kilo chawal" — digits, English number words, and Hindi number words all parse |
-| Voice-activated search | "find me organic apples", "ढूंढो टूथपेस्ट" |
+| Quantity via voice | "add 2 bananas", "teen Kele add karo", "ek kilo chawal" — digits, English number words, and Hindi number words all parse |
+| Voice-activated search | "find toothpaste", "ढूंढो टूथपेस्ट" |
 | Price range filtering | "toothpaste under 100", "tea under 300 rupees", "500 rupaye se kam", plus a manual price field in the UI |
 | Minimalist, visual-feedback UI | Ticker log + toasts show exactly what was heard and what action was taken, in real time |
 | Confirm before committing | Every add — by voice, typed command, or a product card's own button — opens a confirmation dialog with the product's name, brand, category, quantity, and price; nothing reaches the cart until you confirm |
