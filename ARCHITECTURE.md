@@ -66,8 +66,7 @@ ever opening a browser tab.
 
 ## Why rule-based NLP instead of calling an LLM API?
 
-The brief allows "any free-tier AI/ML services." I considered routing
-transcripts through an LLM for intent parsing, and rejected it for this
+I considered routing transcripts through an LLM for intent parsing, and rejected it for this
 scope, for three reasons:
 
 1. **Latency and reliability.** A voice assistant needs to feel instant;
