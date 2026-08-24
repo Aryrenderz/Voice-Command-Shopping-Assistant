@@ -30,8 +30,6 @@ If you want to run this project locally on your machine:
 | Voice command recognition | Web Speech API (`SpeechRecognition`), tap-to-talk |
 | NLP for varied phrasing | Rule-based parser (`nlp.js`) — handles "add X", "I need X", "buy X", "get me X" as the same intent |
 | Multilingual input | English (`en-IN`) and Hindi (`hi-IN`) voice recognition, plus a Hindi/English synonym dictionary so "milk", "doodh" and "दूध" all resolve to the same product |
-| Product recommendations | "You usually buy this" — based on a persisted local history of what you've added before |
-| Seasonal recommendations | Produce tagged "In season" based on the current month against a simple seasonal calendar |
 | Substitutes | Out-of-stock items automatically surface 4 alternatives from the same shelf |
 | Add / remove / modify items | Voice or typed commands, plus +/− steppers on every product card and cart line |
 | Auto-categorization | Every product carries its BigBasket category & sub-category, used for filter chips and grouping |
@@ -87,22 +85,17 @@ voice feature has a typed fallback.
 ## Deployment
 
 This is a static site (HTML/CSS/JS, no server-side code), so any static host
-works. Two free options that fit the brief's "AWS / Firebase / Google Cloud"
-suggestion:
+works.
 
-**GitHub Pages** (simplest, matches the GitHub-repo deliverable directly):
+**GitHub**:
 1. Push this folder to a GitHub repository
 2. Repo Settings → Pages → Deploy from branch → `main` / root
-3. Your app is live at `https://<username>.github.io/<repo>/`
+3. Your app is live at `https://github.com/Aryrenderz/Voice-Command-Shopping-Assistant`
 
-**Netlify / Vercel** (also free, slightly faster to set up from a fresh repo):
+**Vercel**:
 1. Import the GitHub repo on either platform
 2. Framework preset: "Other" / static — no build command needed
-3. Publish directory: `/`
-
-Either way, note that the Web Speech API requires HTTPS (or `localhost`) to
-access the microphone — both options serve over HTTPS by default, so no
-extra configuration is needed there.
+3. Publish directory: `https://voice-command-shopping-assistant-murex-nu.vercel.app/`
 
 ## Browser support
 
@@ -110,12 +103,10 @@ The Web Speech API is not part of a web standard yet, so support varies:
 
 | Browser | Voice input |
 |---|---|
-| Chrome / Edge (desktop & Android) | ✅ Full support, both languages |
-| Safari (macOS/iOS) | ⚠️ Partial — works but can be less reliable with Hindi |
-| Firefox | ❌ Not supported — the app detects this and shows the typed-command box as the primary input instead |
+| Chrome / Edge (desktop & Android) | Full support, both languages |
+| Safari (macOS/iOS) | Partial — works but can be less reliable with Hindi |
+| Firefox | Not supported — the app detects this and shows the typed-command box as the primary input instead |
 
-This is why every voice feature is mirrored by the text command bar: the app
-is fully usable with a keyboard on any browser.
 
 ## Project structure
 
@@ -139,7 +130,7 @@ voice-shopping-assistant/
 ## Known limitations
 
 - Voice recognition quality depends entirely on the browser's built-in
-  engine — Anthropic/Claude did not train or fine-tune any speech model here.
+  engine.
 - The product catalog is a curated ~280-item slice of the ~38,000-row
   BigBasket dataset (grocery-relevant categories only), not the full file —
   see `docs/DATA_PIPELINE.md` for why and how.
