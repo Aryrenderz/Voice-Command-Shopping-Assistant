@@ -1,250 +1,141 @@
-# VoiceCart — Voice Command Shopping Assistant
+# Bol Basket — Voice Command Shopping Assistant
 
-A voice-first shopping list, localized for the **Indian grocery market**
-and backed by a **real product catalog** (~2,250 items derived from
-BigBasket's public product data). Speak (or type) a command like *"Add
-doodh"*, *"I need 2 kg atta"* or *"Find toothpaste under ₹100"* and
-VoiceCart adds, removes, searches and organizes your list — with smart
-suggestions based on what's in season, what pairs with what, and what
-you tend to buy.
+A bilingual (English + Hindi) voice-controlled grocery shopping list. Say
+**"add milk"** or **"मुझे दूध चाहिए"** and watch it land in your cart — with
+smart suggestions, out-of-stock substitutes, and a receipt-style checkout
+along the way.
 
-Built as a technical assessment project. Runs entirely in the browser: no
-backend, no API keys, no build step.
+Built as a technical assessment project against the brief in
+[`docs/assignment-brief.md`](docs/assignment-brief.md). The 200-word approach
+summary the brief asks for is in [`docs/APPROACH.md`](docs/APPROACH.md); the
+full build log is in [`docs/DEVELOPMENT_LOG.md`](docs/DEVELOPMENT_LOG.md).
+
+**Live demo:** _add your deployed URL here after publishing — see [Deployment](#deployment)_
 
 ---
 
-## 1. Feature coverage
+## What it does
 
-| Brief requirement | Where it lives |
+| Requirement from the brief | How it's implemented |
 |---|---|
-| Voice command recognition | `js/app.js` — Web Speech API (`SpeechRecognition`) |
-| NLP for varied phrasing ("Add X" / "I need X" / "I want to buy X") | `js/nlp.js` — `parseCommand()`, understands Hindi/English mixed terms ("Add doodh") |
-| Multilingual support | Language picker: English (India), Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati, Kannada — sets `recognition.lang` |
-| Product recommendations ("running low on…") | `js/app.js` — `buildSuggestions()`, powered by a local purchase-history count |
-| Seasonal recommendations | `js/data.js` — `SEASONAL_ITEMS`, keyed to Indian crop seasons by month |
-| Substitutes | `js/data.js` — `SUBSTITUTES` (e.g. milk → soy milk, sugar → jaggery, ghee → vanaspati); offered as a toast when a matching item is added |
-| Add / remove / modify items by voice | `parseCommand()` intents `add` / `remove`, quantity + unit parsing |
-| Automatic categorization | `js/data.js` — `categorize()`, with an Indian-market category set (Staples & Grains, Spices & Condiments, Household & Personal Care, etc.) |
-| Quantity management ("2 kg atta", "500 grams paneer") | `nlp.js` — `extractQuantity()` / `extractUnit()`, covers metric units (kg, litre, gram, ml) alongside count units |
-| Voice-activated search (brand, price range in ₹) against a **real catalog** | `nlp.js` — `extractPriceLimit()` (understands "under ₹100" / "under 100 rupees"); `app.js` — `runSearch()` against `js/data/bigbasket-catalog.json`, ~2,250 real products |
-| Minimalist UI, real-time visual feedback | `index.html` + `css/style.css`, toast notifications, live transcript |
-| Mobile / voice-only optimized | Mobile-first responsive layout, large tap targets, spoken confirmations via `speechSynthesis` |
-| Loading / listening states | Pulsing mic animation, "Listening…" status text |
-| Basic error handling | Mic permission asked once (not on every tap — see §6), no-speech timeout, unsupported-browser fallback to text input |
+| Voice command recognition | Web Speech API (`SpeechRecognition`), tap-to-talk |
+| NLP for varied phrasing | Rule-based parser (`nlp.js`) — handles "add X", "I need X", "buy X", "get me X" as the same intent |
+| Multilingual input | English (`en-IN`) and Hindi (`hi-IN`) voice recognition, plus a Hindi/English synonym dictionary so "milk", "doodh" and "दूध" all resolve to the same product |
+| Product recommendations | "You usually buy this" — based on a persisted local history of what you've added before |
+| Seasonal recommendations | Produce tagged "In season" based on the current month against a simple seasonal calendar |
+| Substitutes | Out-of-stock items automatically surface 4 alternatives from the same shelf |
+| Add / remove / modify items | Voice or typed commands, plus +/− steppers on every product card and cart line |
+| Auto-categorization | Every product carries its BigBasket category & sub-category, used for filter chips and grouping |
+| Quantity via voice | "add 2 bananas", "3 kele jodo", "ek kilo chawal" — digits, English number words, and Hindi number words all parse |
+| Voice-activated search | "find me organic apples", "ढूंढो टूथपेस्ट" |
+| Price range filtering | "toothpaste under 100", "tea under 300 rupees", "500 rupaye se kam", plus a manual price field in the UI |
+| Minimalist, visual-feedback UI | Ticker log + toasts show exactly what was heard and what action was taken, in real time |
+| Confirm before committing | Every add — by voice, typed command, or a product card's own button — opens a confirmation dialog with the product's name, brand, category, quantity, and price; nothing reaches the cart until you confirm |
+| Only add what's actually available | A strict matcher requires the exact item (or, for a plain category word, the right shelf) to genuinely be in the catalog before it's offered for confirmation — a request for something not stocked (e.g. a flavour that isn't sold) resolves to "not found," never a silent substitute |
+| Loading / error states | Mic listening animation, disabled controls for out-of-stock items, friendly no-match / no-speech / mic-denied messages |
 
----
+## Tech stack
 
-## 2. Architecture
+Plain **HTML / CSS / JavaScript** — no build step, no framework, no bundler.
+This was a deliberate choice for an 8-hour assessment: it keeps the whole
+project auditable in four small files, runs instantly from a static host,
+and needs zero dependency maintenance. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the reasoning and the
+data/control flow.
 
-```
-voice-shopping-assistant/
-├── index.html          # markup + ARIA labels
-├── css/style.css        # visual design (tokens documented at the top of the file)
-├── js/
-│   ├── data.js           # category keywords, small fallback catalog, seasonal/substitute/pairing data
-│   ├── data/
-│   │   ├── bigbasket-catalog.json   # ~2,250-product catalog, fetched at runtime (see §5)
-│   │   └── build_catalog.py         # ETL script: raw BigBasket CSV -> the JSON above
-│   ├── nlp.js             # parseCommand(): transcript -> {intent, item, quantity, unit, priceLimit}
-│   └── app.js             # speech recognition, state, rendering, search, event wiring
-├── README.md
-└── WRITEUP.md             # 200-word approach summary (deliverable #3)
-```
+- **Voice input:** browser-native Web Speech API (Chrome/Edge on desktop &
+  Android; Safari has partial support — see [Browser support](#browser-support))
+- **Data:** a curated ~280-item subset of the provided BigBasket product
+  catalog, baked into `data.js` at build time (see
+  [`docs/DATA_PIPELINE.md`](docs/DATA_PIPELINE.md))
+- **Persistence:** `localStorage`, used only for your "usual picks" history
+  (nothing leaves your browser)
 
-**Why plain HTML/CSS/JS instead of a framework?** The brief caps the time
-budget at 8 hours and asks for "clean, production-quality code" that's easy
-to review. A dependency-free app removes build tooling from the equation,
-loads instantly, and is trivial to host on any static file host — while
-still being organized into clear, single-responsibility modules
-(data / NLP / app) rather than one large script.
+## Running it locally
 
-**Why a rule-based NLP layer instead of a hosted NLU API?** It keeps the
-app fully client-side — no API keys to manage, no network latency, no
-per-request cost — while still covering every phrasing pattern called out
-in the brief. `parseCommand()` is the single entry point the rest of the
-app depends on, so it can be swapped for a call to a hosted NLU/LLM service
-later (e.g. for genuinely open-ended phrasing) without touching the UI or
-state code.
-
-**State & persistence.** The shopping list and a lightweight purchase-count
-history are kept in `localStorage` (`vcsa.shoppingList.v1`,
-`vcsa.itemHistory.v1`), so the list survives a page refresh without needing
-an account or a database.
-
----
-
-## 3. Running it locally
-
-Voice recognition requires a "secure context" (HTTPS or `localhost`) in
-every browser that supports it, so opening `index.html` directly via
-`file://` will not enable the microphone (typed commands still work), and
-`fetch()` of the local catalog JSON is also blocked from `file://` in most
-browsers — the app falls back to a small built-in catalog in that case
-(see §5).
+No install, no build. Any static file server works because the app only
+uses relative script tags — opening `index.html` directly also works in most
+browsers, though some browsers block microphone access on the `file://`
+protocol, so a local server is recommended:
 
 ```bash
 cd voice-shopping-assistant
-python3 -m http.server 8080
-# then open http://localhost:8080
+python3 -m http.server 8000
+# then open http://localhost:8000
 ```
 
-Any static server works equally well (`npx serve`, VS Code's Live Server
-extension, etc.).
+or, with Node installed:
 
-**Browser support:** voice input relies on `SpeechRecognition` /
-`webkitSpeechRecognition`, currently shipped in Chrome, Edge and Safari
-(desktop and mobile). Firefox does not yet support it — the app detects
-this and automatically falls back to the text-command box with a visible
-notice, so the app never breaks, it degrades.
-
----
-
-## 4. Deployment
-
-Any static host works. Two straightforward options:
-
-### Option A — GitHub Pages (recommended, free, matches the "GitHub repo" deliverable)
-1. Push this folder to a new GitHub repository.
-2. In the repo, go to **Settings → Pages**.
-3. Under **Source**, choose the `main` branch and `/ (root)` folder → **Save**.
-4. GitHub publishes the site at `https://<username>.github.io/<repo-name>/`
-   within a minute or two.
-
-### Option B — Firebase Hosting
 ```bash
-npm install -g firebase-tools
-firebase login
-firebase init hosting     # choose this folder as the public directory
-firebase deploy
+npx serve .
 ```
 
-Both give you the "Working application URL" deliverable with zero server
-code to maintain, and both serve over HTTPS — which is required for the
-microphone to work at all, and for the browser to persist mic permission
-so the prompt only appears once (see §6).
+Grant microphone permission when prompted, tap the mic button, and speak. If
+your browser doesn't support the Web Speech API, the text box above the
+product grid accepts the exact same commands typed instead of spoken — every
+voice feature has a typed fallback.
 
----
+## Deployment
 
-## 5. About the dataset
+This is a static site (HTML/CSS/JS, no server-side code), so any static host
+works. Two free options that fit the brief's "AWS / Firebase / Google Cloud"
+suggestion:
 
-Voice search is backed by a **real dataset**: the [BigBasket product
-catalog](https://www.kaggle.com/code/ridamahmood005/indian-grocery-supermarket-big-basket-eda)
-(27,555 products scraped from bigbasket.com — product name, category,
-sub_category, brand, sale_price, market_price, type, rating, description).
+**GitHub Pages** (simplest, matches the GitHub-repo deliverable directly):
+1. Push this folder to a GitHub repository
+2. Repo Settings → Pages → Deploy from branch → `main` / root
+3. Your app is live at `https://<username>.github.io/<repo>/`
 
-`js/data/build_catalog.py` is the ETL script that turns the raw CSV into
-what the app actually loads, `js/data/bigbasket-catalog.json`
-(~2,250 products, 328KB):
+**Netlify / Vercel** (also free, slightly faster to set up from a fresh repo):
+1. Import the GitHub repo on either platform
+2. Framework preset: "Other" / static — no build command needed
+3. Publish directory: `/`
 
-1. **Filters out non-grocery noise.** The raw export also covers cookware,
-   pet supplies, stationery, pooja items and a large cosmetics range — all
-   dropped, keeping only plausible "shopping list" items (a curated slice
-   of Beauty & Hygiene — Oral Care, Bath & Hand Wash, Feminine Hygiene —
-   is kept; skincare/makeup/fragrance is not).
-2. **Maps BigBasket's own category/sub_category taxonomy onto VoiceCart's
-   9 app categories** (Produce, Dairy, Bakery, Meat & Seafood, Staples &
-   Grains, Spices & Condiments, Snacks, Beverages, Household & Personal
-   Care), so real catalog items group into the shopping list exactly like
-   voice/typed entries do.
-3. **Cleans and de-duplicates**: drops rows missing a name/brand/price,
-   removes near-identical listings.
-4. **Caps at 250 items per category** (highest-rated first) — the full
-   27K-row file is far more than a client-side fetch/filter needs for a
-   demo, and most of the long tail is redundant SKU variants of the same
-   product.
+Either way, note that the Web Speech API requires HTTPS (or `localhost`) to
+access the microphone — both options serve over HTTPS by default, so no
+extra configuration is needed there.
 
-To regenerate it (e.g. with different caps or category rules), download
-`BigBasket Products.csv` from the Kaggle dataset, place it next to
-`build_catalog.py`, and run:
-```bash
-cd js/data
-pip install pandas
-python3 build_catalog.py
+## Browser support
+
+The Web Speech API is not part of a web standard yet, so support varies:
+
+| Browser | Voice input |
+|---|---|
+| Chrome / Edge (desktop & Android) | ✅ Full support, both languages |
+| Safari (macOS/iOS) | ⚠️ Partial — works but can be less reliable with Hindi |
+| Firefox | ❌ Not supported — the app detects this and shows the typed-command box as the primary input instead |
+
+This is why every voice feature is mirrored by the text command bar: the app
+is fully usable with a keyboard on any browser.
+
+## Project structure
+
+```
+voice-shopping-assistant/
+├── index.html          # App shell / markup
+├── style.css            # Design system + all styling
+├── data.js               # Curated product catalog (generated from the BigBasket CSV)
+├── i18n.js                # English / Hindi UI string dictionary
+├── nlp.js                  # Command parsing + product matching (the "brain")
+├── app.js                   # State, rendering, event wiring, speech recognition
+├── products.json              # Same catalog as data.js, as plain JSON (for reference/reuse)
+└── docs/
+    ├── assignment-brief.md      # The original brief, for reference
+    ├── APPROACH.md                # 200-word write-up (the brief's deliverable #3)
+    ├── ARCHITECTURE.md              # How the pieces fit together and why
+    ├── DATA_PIPELINE.md               # How the BigBasket CSV became data.js
+    └── DEVELOPMENT_LOG.md               # Step-by-step build log
 ```
 
-`js/app.js`'s `loadCatalog()` fetches `bigbasket-catalog.json` at startup
-and swaps it in for search. If that fetch fails — most commonly because
-the app was opened via `file://` instead of a local server (see §3) — it
-falls back to a small ~30-item hand-written catalog in `js/data.js`
-(`FALLBACK_CATALOG`), so the app still works, just with fewer search
-results.
+## Known limitations
 
-Search itself (`runSearch()`) matches on whole words first (so "dal"
-doesn't also return "Sandalwood") and falls back to a plain substring
-match only if that comes up empty (so partial words like "choc" still
-find "Chocolate"); results are ranked by name-prefix match, then rating,
-then price, and capped at 8 shown at a time with a note if there are more.
-
----
-
-## 6. Try these commands
-
-- "Add doodh" (milk)
-- "I need aloo" (potatoes)
-- "I want to buy paneer"
-- "Add 2 kg atta"
-- "Add 500 grams toor dal"
-- "Remove doodh from my list"
-- "Find toothpaste under ₹100"
-- "Search for basmati rice"
-- "Clear my list"
-
-Switch the language dropdown before speaking to try Hindi, Bengali,
-Tamil, Telugu, Marathi, Gujarati or Kannada recognition (accuracy depends
-on the browser's speech engine, not on this app).
-
----
-
-## 7. Mic permission is only asked once
-
-Earlier versions of this app called `recognition.start()` directly, which
-in some browsers re-triggers a permission prompt on every single tap of
-the mic button. Fixed in `app.js`:
-
-- `initMicPermission()` checks the current microphone permission via the
-  Permissions API (`navigator.permissions.query({name: 'microphone'})`)
-  once, on page load, and caches the result (`micPermissionState`). It
-  also listens for `onchange` in case the person changes the permission
-  in their browser settings mid-session.
-- `ensureMicAccess()` is called before every `recognition.start()`. If
-  permission is already known to be `granted`, it returns immediately —
-  no prompt, no delay. Only the first time (state `prompt`/`unknown`)
-  does it call `getUserMedia({audio: true})`, which triggers the
-  browser's real, persistent permission dialog; the resulting media
-  stream is stopped immediately afterward since `SpeechRecognition`
-  captures its own audio and doesn't need it held open.
-- If the person denies access, or a recognition error comes back as
-  `not-allowed`/`service-not-allowed`, the state is cached as `denied` so
-  the app shows the "allow it in your browser settings" message
-  immediately on the next tap instead of prompting again.
-
-**This requires a secure context** (HTTPS or `localhost`) — browsers only
-persist microphone permission per-origin under HTTPS/localhost by spec,
-so hosting over plain HTTP (e.g. a non-localhost IP without TLS) will
-still re-prompt on every tap no matter what the app does. Both deployment
-options in §4 serve over HTTPS.
-
----
-
-## 8. Known limitations & next steps
-
-Written down honestly, as part of "clean, production-quality" documentation:
-
-- The NLP layer is rule-based, so phrasing far outside the patterns in
-  `nlp.js` (e.g. a bare noun phrase like "a dozen eggs" with no verb) is
-  reported as "didn't catch that" rather than guessed at. A hosted LLM/NLU
-  call would generalize further; it was left out to keep the app
-  dependency- and cost-free for this assessment.
-- The BigBasket catalog is a static, scraped snapshot (June 2022) — no
-  live stock or current pricing. It's real product/brand/price data, but
-  standing in for what would be a live catalog/inventory API in
-  production.
-- Recommendation logic ("running low on…", pairings) is a simple frequency
-  count and static pairing table rather than a trained model — intentionally
-  simple and explainable for an 8-hour scope, and isolated in
-  `buildSuggestions()` so it can be swapped for a real recommendation
-  service later.
-- Search is client-side substring/word matching over ~2,250 items, not a
-  real search index — fine at this scale, but wouldn't scale to the full
-  27K-row source file or a live multi-million-SKU catalog without a
-  proper backend search service.
+- Voice recognition quality depends entirely on the browser's built-in
+  engine — Anthropic/Claude did not train or fine-tune any speech model here.
+- The product catalog is a curated ~280-item slice of the ~38,000-row
+  BigBasket dataset (grocery-relevant categories only), not the full file —
+  see `docs/DATA_PIPELINE.md` for why and how.
+- "Out of stock" / "low stock" flags are simulated deterministically (not
+  live inventory) so the demo behaves consistently across reloads.
+- There's no backend or real payment step — checkout generates a mock order
+  ID and clears the cart, matching the brief's scope (a shopping *list*
+  manager, not a payment system).
